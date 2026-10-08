@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const samplePatient = `Age: 54
 Sex: Female
@@ -9,6 +9,34 @@ HbA1c: 7.4%
 eGFR: 42 mL/min/1.73m²
 Medical history: Hypertension
 Current medications: Metformin, amlodipine`;
+
+const MAX_FILE_SIZE_MB = 15;
+const MAX_PATIENT_CHARS = 8000;
+
+// Map common server error patterns to friendly messages
+function friendlyError(msg) {
+  if (!msg) return "An unexpected error occurred. Please try again.";
+  const lower = msg.toLowerCase();
+  if (lower.includes("capacity") || lower.includes("overloaded") || lower.includes("high demand")) {
+    return "The AI service is temporarily at capacity. Please wait 30 seconds and try again.";
+  }
+  if (lower.includes("quota") || lower.includes("rate limit")) {
+    return "API quota exceeded. Please try again in a few minutes.";
+  }
+  if (lower.includes("pdf") || lower.includes("extract")) {
+    return "Could not read the PDF. Ensure it is a text-based PDF and not image-only or encrypted.";
+  }
+  return msg;
+}
+
+const STEPS = [
+  "Extracting PDF pages…",
+  "Chunking protocol sections…",
+  "Generating semantic embeddings…",
+  "Retrieving evidence via pgvector…",
+  "Reasoning with Gemini…",
+  "Scoring deterministically…",
+];
 
 function StatusBadge({ status }) {
   if (status === "PASS") return <span className="pass">PASS</span>;
@@ -35,6 +63,9 @@ function Results({ result }) {
   } else if (result.overallStatus === "REQUIRES_REVIEW") {
     decisionClass = "decision warn";
     decisionText = "⚠ Requires Review";
+  } else {
+    decisionClass = "decision bad";
+    decisionText = "✗ Not Eligible";
   }
 
   return (
@@ -51,7 +82,7 @@ function Results({ result }) {
         <p>{result.summary}</p>
 
         {result.explanation && result.explanation !== result.summary && (
-          <div style={{ marginTop: "12px", padding: "10px", background: result.eligible ? "#e6f4ea" : "#fce8e6", border: "2px solid #000", fontSize: "12px", lineHeight: "1.4" }}>
+          <div style={{ marginTop: "12px", padding: "10px", background: result.eligible ? "#e6f4ea" : result.overallStatus === "REQUIRES_REVIEW" ? "#fff7e0" : "#fce8e6", border: "2px solid #000", fontSize: "12px", lineHeight: "1.4" }}>
             <strong>Determination:</strong> {result.explanation}
           </div>
         )}
@@ -92,9 +123,9 @@ function Results({ result }) {
                   ? x
                   : `${x.issue || x.criterion || "Contraindication"}${x.severity ? ` [${x.severity}]` : ""}`;
                 const cite = typeof x !== "string" && x.page
-                  ? ` (Page ${x.page}${x.section ? `, Sec ${x.section}` : ""})`
+                  ? ` — Page ${x.page}${x.section ? `, §${x.section}` : ""}`
                   : typeof x !== "string" && x.page === null
-                  ? " (Page: UNKNOWN)"
+                  ? " — Page: UNKNOWN (unverified)"
                   : "";
                 return <li key={i}>{text}{cite}</li>;
               })}
@@ -107,8 +138,10 @@ function Results({ result }) {
         <div className="panel-title">
           <span>05</span> Criteria breakdown
           {criteria.length > 0 && (
-            <span style={{ marginLeft: "auto", fontSize: "12px", color: "#666" }}>
-              {criteria.filter(c => c.status === "PASS").length} PASS &bull; {criteria.filter(c => c.status === "FAIL").length} FAIL &bull; {criteria.filter(c => c.status === "UNKNOWN").length} UNKNOWN
+            <span style={{ marginLeft: "auto", fontSize: "12px", color: "#666", display: "flex", gap: "8px" }}>
+              <span className="pass" style={{ fontSize: "11px" }}>{criteria.filter(c => c.status === "PASS").length} PASS</span>
+              <span className="fail" style={{ fontSize: "11px" }}>{criteria.filter(c => c.status === "FAIL").length} FAIL</span>
+              <span className="unknown" style={{ fontSize: "11px" }}>{criteria.filter(c => c.status === "UNKNOWN").length} ?</span>
             </span>
           )}
         </div>
@@ -156,11 +189,15 @@ function Results({ result }) {
 
 export default function Home() {
   const [file, setFile] = useState(null);
+  const [fileError, setFileError] = useState("");
   const [patient, setPatient] = useState(samplePatient);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [stepIdx, setStepIdx] = useState(0);
+  const inFlightRef = useRef(false);
+  const stepTimerRef = useRef(null);
 
   async function loadHistory() {
     try {
@@ -174,12 +211,59 @@ export default function Home() {
 
   useEffect(() => { loadHistory(); }, []);
 
+  // Cycle through progress step labels during loading
+  useEffect(() => {
+    if (loading) {
+      setStepIdx(0);
+      let i = 0;
+      stepTimerRef.current = setInterval(() => {
+        i = Math.min(i + 1, STEPS.length - 1);
+        setStepIdx(i);
+      }, 8000);
+    } else {
+      clearInterval(stepTimerRef.current);
+    }
+    return () => clearInterval(stepTimerRef.current);
+  }, [loading]);
+
+  function handleFileChange(e) {
+    const picked = e.target.files?.[0] || null;
+    setFileError("");
+    if (!picked) { setFile(null); return; }
+
+    if (picked.type !== "application/pdf") {
+      setFileError("Only PDF files are accepted.");
+      setFile(null);
+      e.target.value = "";
+      return;
+    }
+    if (picked.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      setFileError(`File is too large (${(picked.size / 1024 / 1024).toFixed(1)} MB). Max ${MAX_FILE_SIZE_MB} MB.`);
+      setFile(null);
+      e.target.value = "";
+      return;
+    }
+    if (picked.size < 512) {
+      setFileError("The PDF appears to be empty. Please upload a valid protocol file.");
+      setFile(null);
+      e.target.value = "";
+      return;
+    }
+
+    setFile(picked);
+  }
+
   async function analyze() {
+    if (inFlightRef.current) return; // Prevent duplicate submissions
     if (!file) return setMessage("Upload a clinical trial protocol PDF first.");
     if (!patient.trim()) return setMessage("Enter a synthetic patient summary.");
+    if (patient.length > MAX_PATIENT_CHARS) return setMessage(`Patient summary is too long (${patient.length} chars). Max ${MAX_PATIENT_CHARS}.`);
+
+    inFlightRef.current = true;
     setLoading(true);
     setMessage("");
     setResult(null);
+
     try {
       const form = new FormData();
       form.append("file", file);
@@ -189,28 +273,33 @@ export default function Home() {
       if (!r.ok) throw new Error(data.error || "Analysis failed.");
       setResult(data.analysis);
 
-      // Immediate cohort update for live demo responsiveness
+      // Optimistic cohort update for live demo responsiveness
       const firstLine = patient.split("\n")[0] || "Synthetic Patient";
       const pLabel = firstLine.length > 5 && firstLine.length < 40 ? firstLine : "Synthetic Patient";
       setHistory(prev => [
         {
-          id: Date.now(),
+          id: `opt-${Date.now()}`,
           patient_label: pLabel,
           score: data.analysis.eligibilityScore,
           eligible: data.analysis.eligible,
           overall_status: data.analysis.overallStatus,
           trial_name: file.name || "Clinical Trial Protocol"
         },
-        ...prev.filter(item => item.id !== Date.now())
+        ...prev
       ]);
 
-      loadHistory();
+      // Refresh from DB after a brief delay (avoid race with DB write)
+      setTimeout(loadHistory, 2000);
     } catch (e) {
-      setMessage(e.message);
+      setMessage(friendlyError(e.message));
     } finally {
       setLoading(false);
+      inFlightRef.current = false;
     }
   }
+
+  const charCount = patient.length;
+  const charWarning = charCount > MAX_PATIENT_CHARS * 0.85;
 
   return (
     <main>
@@ -222,7 +311,7 @@ export default function Home() {
           <p>Evidence-grounded clinical trial eligibility matching.</p>
         </div>
         <div className="status">
-          <span></span> Secure analysis workspace
+          <span></span> Gemini + pgvector Pipeline
         </div>
       </header>
 
@@ -243,33 +332,51 @@ export default function Home() {
       <section className="grid">
         <div className="panel">
           <div className="panel-title"><span>01</span> Trial protocol</div>
-          <label className="upload">
+          <label className={`upload${file ? " upload-ready" : ""}`}>
             <input
+              id="protocol-pdf-input"
               type="file"
               accept="application/pdf"
-              onChange={e => setFile(e.target.files?.[0] || null)}
+              onChange={handleFileChange}
+              disabled={loading}
             />
-            <div className="upload-icon">↑</div>
+            <div className="upload-icon">{file ? "✓" : "↑"}</div>
             <strong>{file ? file.name : "Drop or choose a PDF"}</strong>
-            <small>Clinical trial protocol • PDF format</small>
+            <small>
+              {file
+                ? `${(file.size / 1024).toFixed(0)} KB · PDF ready`
+                : `Clinical trial protocol · PDF · Max ${MAX_FILE_SIZE_MB} MB`}
+            </small>
           </label>
+          {fileError && <div className="error" style={{ marginTop: "10px" }}>⚠ {fileError}</div>}
         </div>
 
         <div className="panel">
           <div className="panel-title"><span>02</span> Synthetic patient</div>
           <textarea
+            id="patient-summary-input"
             value={patient}
             onChange={e => setPatient(e.target.value)}
             placeholder="Paste patient summary here…"
+            disabled={loading}
+            maxLength={MAX_PATIENT_CHARS}
           />
-          <button className="primary" onClick={analyze} disabled={loading}>
+          <div style={{ fontSize: "11px", color: charWarning ? "#b51c1c" : "#888", textAlign: "right", marginTop: "4px" }}>
+            {charCount} / {MAX_PATIENT_CHARS} characters
+          </div>
+          <button
+            id="analyze-btn"
+            className="primary"
+            onClick={analyze}
+            disabled={loading || !!fileError}
+          >
             {loading ? (
-              <><span className="spinner" />Analyzing evidence…</>
+              <><span className="spinner" />{STEPS[stepIdx]}</>
             ) : (
               "Analyze eligibility →"
             )}
           </button>
-          {message && <div className="error">⚠ {message}</div>}
+          {message && <div className="error" role="alert">⚠ {message}</div>}
         </div>
       </section>
 
@@ -293,7 +400,7 @@ export default function Home() {
                 <div className="tr" key={x.id || i}>
                   <span>{x.patient_label || `Synthetic Patient ${i + 1}`}</span>
                   <b>{x.score}%</b>
-                  <span className={x.eligible ? "pass" : "fail"}>
+                  <span className={x.eligible ? "pass" : x.overall_status === "REQUIRES_REVIEW" ? "unknown" : "fail"}>
                     {x.eligible ? "Eligible" : (x.overall_status === "REQUIRES_REVIEW" ? "Review" : "Not Eligible")}
                   </span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -307,7 +414,7 @@ export default function Home() {
       </section>
 
       <footer>
-        NexusClin &bull; Powered by Google Gemini &bull; Demo uses synthetic patient information only.
+        NexusClin &bull; Powered by Google Gemini &bull; pgvector semantic retrieval &bull; Demo uses synthetic patient information only.
       </footer>
     </main>
   );

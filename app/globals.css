@@ -218,6 +218,14 @@ h2 {
   background: var(--accent-lt);
 }
 
+.upload-ready {
+  border-color: var(--good);
+  border-style: solid;
+  background: var(--good-lt);
+}
+
+.upload-ready .upload-icon { color: var(--good); }
+
 .upload input { display: none; }
 
 .upload-icon {
@@ -348,6 +356,7 @@ textarea:focus {
 
 .decision.good { background: var(--good-lt); color: var(--good); }
 .decision.warn { background: #ffe8b3; color: var(--warn-ink); }
+.decision.bad  { background: var(--bad-lt); color: var(--bad); border-color: var(--bad); }
 
 .score-card > p {
   color: #b0bcbe;
@@ -599,6 +608,8 @@ footer {
   .results { grid-template-columns: 1fr; }
   h1 { font-size: 34px; }
   h2 { font-size: 22px; }
-  .score { font-size: 64px; }
+  .score { font-size: 52px; }
+  .score small { font-size: 24px; }
   .tr { grid-template-columns: 1.5fr 60px 80px 1.2fr; font-size: 12px; }
+  .score-card { padding: 16px; }
 }
