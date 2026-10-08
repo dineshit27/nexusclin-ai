@@ -89,6 +89,35 @@ function parseJsonFromText(rawText) {
   }
 }
 
+const CANDIDATE_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash"
+];
+
+function isTemporaryCapacityError(status, message) {
+  // HTTP status codes indicating capacity, rate limiting, or temporary server unavailability
+  if ([429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+
+  const msg = (message || "").toLowerCase();
+  const capacityKeywords = [
+    "high demand",
+    "spikes in demand",
+    "try again later",
+    "temporarily unavailable",
+    "capacity",
+    "overloaded",
+    "resource exhausted",
+    "rate limit",
+    "quota exceeded",
+    "unavailable"
+  ];
+
+  return capacityKeywords.some(keyword => msg.includes(keyword));
+}
+
 async function callGeminiInteractionsApi(promptText) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -96,40 +125,65 @@ async function callGeminiInteractionsApi(promptText) {
   }
 
   const url = "https://generativelanguage.googleapis.com/v1beta/interactions";
+  let lastError = null;
 
-  const payload = {
-    model: "gemini-3.8-flash",
-    input: promptText,
-    generation_config: {
-      thinking_level: "medium"
-    }
-  };
+  for (let i = 0; i < CANDIDATE_MODELS.length; i++) {
+    const model = CANDIDATE_MODELS[i];
+    const isLastModel = i === CANDIDATE_MODELS.length - 1;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": apiKey
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    let errMessage = `Gemini API error (status ${res.status})`;
     try {
-      const errJson = JSON.parse(errorText);
-      if (errJson.error?.message) {
-        errMessage = errJson.error.message;
+      const payload = {
+        model,
+        input: promptText,
+        generation_config: {
+          thinking_level: "medium"
+        }
+      };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        let errMessage = `Gemini API error (status ${res.status})`;
+        try {
+          const errJson = JSON.parse(errorText);
+          if (errJson.error?.message) {
+            errMessage = errJson.error.message;
+          }
+        } catch {}
+
+        if (!isLastModel && isTemporaryCapacityError(res.status, errMessage)) {
+          console.warn(`[Gemini Fallback] Model ${model} returned temporary capacity/availability error (${res.status}: ${errMessage}). Retrying with fallback model ${CANDIDATE_MODELS[i + 1]}...`);
+          lastError = new Error(`${model} capacity error: ${errMessage}`);
+          continue;
+        }
+
+        throw new Error(errMessage);
       }
-    } catch {}
-    throw new Error(errMessage);
+
+      const data = await res.json();
+      const rawText = extractTextFromInteractionResponse(data);
+      return parseJsonFromText(rawText);
+    } catch (err) {
+      if (!isLastModel && isTemporaryCapacityError(0, err.message)) {
+        console.warn(`[Gemini Fallback] Model ${model} caught temporary availability error (${err.message}). Retrying with fallback model ${CANDIDATE_MODELS[i + 1]}...`);
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
   }
 
-  const data = await res.json();
-  const rawText = extractTextFromInteractionResponse(data);
-  return parseJsonFromText(rawText);
+  throw lastError || new Error("All configured Gemini models failed due to temporary capacity limits.");
 }
+
 
 export async function POST(req) {
   try {
