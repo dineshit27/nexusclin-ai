@@ -96,10 +96,9 @@ const CANDIDATE_MODELS = [
 ];
 
 function isTemporaryCapacityError(status, message) {
-  // HTTP status codes indicating capacity, rate limiting, or temporary server unavailability
-  if ([429, 500, 502, 503, 504].includes(status)) {
-    return true;
-  }
+  // Only retry for clear capacity/rate-limit/gateway HTTP codes.
+  // Deliberately exclude 500 — it may indicate a bad request or server bug, not capacity.
+  if ([429, 502, 503, 504].includes(status)) return true;
 
   const msg = (message || "").toLowerCase();
   const capacityKeywords = [
@@ -107,16 +106,17 @@ function isTemporaryCapacityError(status, message) {
     "spikes in demand",
     "try again later",
     "temporarily unavailable",
-    "capacity",
     "overloaded",
     "resource exhausted",
     "rate limit",
     "quota exceeded",
-    "unavailable"
+    "rate_limit_exceeded",
+    "capacity",
   ];
 
   return capacityKeywords.some(keyword => msg.includes(keyword));
 }
+
 
 async function callGeminiInteractionsApi(promptText) {
   const apiKey = process.env.GEMINI_API_KEY;
