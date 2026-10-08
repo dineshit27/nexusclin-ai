@@ -25,6 +25,17 @@ function CriterionDot({ status }) {
 function Results({ result }) {
   const criteria = result.criteria || [];
   const contraindications = result.contraindications || [];
+  const stats = result.retrievalStats;
+
+  let decisionClass = "decision warn";
+  let decisionText = "✗ Not Eligible";
+  if (result.overallStatus === "ELIGIBLE" || result.eligible) {
+    decisionClass = "decision good";
+    decisionText = "✓ Eligible";
+  } else if (result.overallStatus === "REQUIRES_REVIEW") {
+    decisionClass = "decision warn";
+    decisionText = "⚠ Requires Review";
+  }
 
   return (
     <section className="results">
@@ -34,10 +45,16 @@ function Results({ result }) {
           {result.eligibilityScore ?? result.overallScore ?? 0}
           <small>%</small>
         </div>
-        <div className={result.eligible ? "decision good" : "decision warn"}>
-          {result.eligible ? "✓ Eligible" : "✗ Not Eligible"}
+        <div className={decisionClass}>
+          {decisionText}
         </div>
         <p>{result.summary}</p>
+
+        {stats && (
+          <div style={{ marginTop: "16px", padding: "8px 12px", background: "#f0f4f8", border: "2px solid #000", fontSize: "12px", fontWeight: "600" }}>
+            🔍 Grounded via {stats.retrievedChunksCount} pgvector chunks &bull; {stats.modelUsed}
+          </div>
+        )}
 
         {contraindications.length > 0 && (
           <div className="contra" style={{ marginTop: "20px" }}>
@@ -49,6 +66,8 @@ function Results({ result }) {
                   : `${x.issue || x.criterion || "Contraindication"}${x.severity ? ` [${x.severity}]` : ""}`;
                 const cite = typeof x !== "string" && x.page
                   ? ` (Page ${x.page}${x.section ? `, Sec ${x.section}` : ""})`
+                  : typeof x !== "string" && x.page === null
+                  ? " (Page: UNKNOWN)"
                   : "";
                 return <li key={i}>{text}{cite}</li>;
               })}
@@ -58,7 +77,14 @@ function Results({ result }) {
       </div>
 
       <div className="panel evidence">
-        <div className="panel-title"><span>05</span> Criteria breakdown</div>
+        <div className="panel-title">
+          <span>05</span> Criteria breakdown
+          {criteria.length > 0 && (
+            <span style={{ marginLeft: "auto", fontSize: "12px", color: "#666" }}>
+              {criteria.filter(c => c.status === "PASS").length} PASS &bull; {criteria.filter(c => c.status === "FAIL").length} FAIL &bull; {criteria.filter(c => c.status === "UNKNOWN").length} UNKNOWN
+            </span>
+          )}
+        </div>
 
         {criteria.length === 0 && (
           <div className="empty">No criteria returned by the AI analysis.</div>
@@ -82,8 +108,9 @@ function Results({ result }) {
                 <blockquote>
                   &ldquo;{c.protocolEvidence || c.evidence}&rdquo;
                   <small>
-                    Protocol — Page {c.page ?? "—"}
+                    Protocol — {c.page ? `Page ${c.page}` : "Page: UNKNOWN (Unverified)"}
                     {c.section ? `, §${c.section}` : ""}
+                    {c.verified === false && " ⚠ Unverified quote"}
                   </small>
                 </blockquote>
               )}
@@ -112,7 +139,9 @@ export default function Home() {
     try {
       const r = await fetch("/api/history");
       const data = await r.json();
-      if (data.ok) setHistory(data.items || []);
+      if (data.ok && Array.isArray(data.items) && data.items.length > 0) {
+        setHistory(data.items);
+      }
     } catch {}
   }
 
@@ -132,6 +161,22 @@ export default function Home() {
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || "Analysis failed.");
       setResult(data.analysis);
+
+      // Immediate cohort update for live demo responsiveness
+      const firstLine = patient.split("\n")[0] || "Synthetic Patient";
+      const pLabel = firstLine.length > 5 && firstLine.length < 40 ? firstLine : "Synthetic Patient";
+      setHistory(prev => [
+        {
+          id: Date.now(),
+          patient_label: pLabel,
+          score: data.analysis.eligibilityScore,
+          eligible: data.analysis.eligible,
+          overall_status: data.analysis.overallStatus,
+          trial_name: file.name || "Clinical Trial Protocol"
+        },
+        ...prev.filter(item => item.id !== Date.now())
+      ]);
+
       loadHistory();
     } catch (e) {
       setMessage(e.message);
@@ -222,7 +267,7 @@ export default function Home() {
                   <span>{x.patient_label || `Synthetic Patient ${i + 1}`}</span>
                   <b>{x.score}%</b>
                   <span className={x.eligible ? "pass" : "fail"}>
-                    {x.eligible ? "Eligible" : "Review"}
+                    {x.eligible ? "Eligible" : (x.overall_status === "REQUIRES_REVIEW" ? "Review" : "Not Eligible")}
                   </span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {x.trial_name || "Protocol"}
