@@ -12,7 +12,7 @@ AI-assisted clinical trial eligibility matching for Zephoria 2K26 PS-02.
 ## Environment
 Copy `.env.example` to `.env.local`:
 
-- `OPENAI_API_KEY` — server-side only.
+- `GEMINI_API_KEY` — server-side only.
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
@@ -26,4 +26,4 @@ npm run dev
 For Supabase, run `supabase/schema.sql` in the SQL editor.
 
 ## Security
-Never place the OpenAI secret in client-side code. The AI call happens in the Next.js server route.
+Never place the Gemini secret in client-side code. The AI call happens in the Next.js server route.

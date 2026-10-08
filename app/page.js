@@ -123,12 +123,16 @@ function Results({ result }) {
         <div className="criterion-body">
           <div className="criterion-head"><strong>{c.criterion}</strong><span className={c.status === "PASS" ? "pass" : "fail"}>{c.status}</span></div>
           <p>{c.reason}</p>
-          <blockquote>“{c.evidence}” <small>Page {c.page ?? "—"}</small></blockquote>
+          <blockquote>“{c.evidence || c.protocolEvidence || "N/A"}” <small>Page {c.page ?? "—"}{c.section ? `, Sec ${c.section}` : ""}</small></blockquote>
         </div>
       </div>)}
       {(result.contraindications || []).length > 0 && <div className="contra">
         <strong>⚠ Critical contraindications</strong>
-        <ul>{result.contraindications.map((x,i)=><li key={i}>{x}</li>)}</ul>
+        <ul>{result.contraindications.map((x, i) => (
+          <li key={i}>
+            {typeof x === "string" ? x : `${x.issue || x.criterion || JSON.stringify(x)}${x.severity ? ` [${x.severity}]` : ''}${x.page ? ` (Page ${x.page}${x.section ? `, Sec ${x.section}` : ''})` : ''}`}
+          </li>
+        ))}</ul>
       </div>}
     </div>
   </section>
