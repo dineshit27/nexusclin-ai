@@ -8,8 +8,8 @@ export const maxDuration = 60;
 async function parsePdfByPages(buffer) {
   const pages = [];
   const options = {
-    pagerender: function(pageData) {
-      return pageData.getTextContent({ normalizeWhitespace: true }).then(function(textContent) {
+    pagerender: function (pageData) {
+      return pageData.getTextContent({ normalizeWhitespace: true }).then(function (textContent) {
         let lastY, text = "";
         for (let item of textContent.items) {
           if (!item.str) continue;
@@ -51,7 +51,7 @@ async function callGeminiApi(promptText) {
   }
 
   const primaryUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-  const fallbackUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+  const fallbackUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
   const payload = {
     contents: [
@@ -94,7 +94,7 @@ async function callGeminiApi(promptText) {
       if (errJson.error?.message) {
         errMessage = errJson.error.message;
       }
-    } catch {}
+    } catch { }
     throw new Error(errMessage);
   }
 
