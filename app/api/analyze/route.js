@@ -73,7 +73,7 @@ export async function POST(req) {
 
     // 4. Grounded Reasoning with Gemini
     const systemPrompt = `You are NexusClin's clinical trial eligibility reasoning engine.
-Your duty is evidence integrity and patient safety.
+Your duty is evidence integrity, patient safety, and clinical rigor.
 Grounding Rules:
 1. Base your analysis STRICTLY and ONLY on the provided protocol chunks and patient medical summary.
 2. DO NOT hallucinate or assume unstated criteria, labs, or trial requirements.
@@ -81,8 +81,8 @@ Grounding Rules:
 4. If a protocol rule or patient value cannot be verified from the provided chunks, you MUST set status to "UNKNOWN" and page to null. NEVER default or guess Page 1.
 5. Extract all applicable inclusion criteria and exclusion criteria.
 6. For inclusion criteria: status is PASS if patient satisfies it, FAIL if violated.
-7. For exclusion criteria: status is FAIL if patient meets the exclusion (disqualified), PASS if patient avoids it.
-8. Identify any critical contraindications (e.g. organ dysfunction, renal failure, severe adverse interactions).`;
+7. For exclusion criteria: status is PASS if patient avoids the exclusion condition (e.g., if protocol excludes eGFR < 30, a patient with eGFR 42 PASSES because 42 >= 30). Status is FAIL if patient meets the exclusion condition (disqualified).
+8. Critical Contraindications: ONLY list contraindications if the patient actually exhibits the contraindicated condition based on their record (e.g. do NOT flag a contraindication for renal impairment if patient's eGFR is 42 mL/min). Cite the exact Page and Section of the safety warning.`;
 
     const userPrompt = `PATIENT MEDICAL SUMMARY:
 ${patient}
@@ -101,7 +101,7 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
       "patientEvidence": "Direct quote or specific finding from patient summary",
       "protocolEvidence": "Exact verbatim quote from the protocol chunk",
       "page": 2,
-      "section": "2.1 Inclusion Criteria",
+      "section": "SECTION 2.2: EXCLUSION CRITERIA",
       "reason": "Clinical explanation of pass/fail/unknown decision"
     }
   ],
@@ -110,7 +110,7 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
       "issue": "Description of contraindication or safety hazard",
       "severity": "CRITICAL" | "MODERATE" | "LOW",
       "page": 2,
-      "section": "2.2 Exclusion Criteria"
+      "section": "SECTION 3: CONTRAINDICATIONS AND SAFETY WARNINGS"
     }
   ]
 }`;
@@ -120,22 +120,41 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
     // 5. Evidence Integrity & Grounding Validation
     const validatedCriteria = validateAndGroundCriteria(rawResult.criteria || [], allChunks);
 
+    // Normalize and ground contraindications against protocol chunks
     const normalizedContraindications = (rawResult.contraindications || []).map(item => {
-      if (typeof item === "string") {
-        return {
-          issue: item,
-          severity: "CRITICAL",
-          page: null,
-          section: ""
-        };
+      const issue = typeof item === "string" ? item : (item.issue || item.description || "Identified safety hazard");
+      const issueClean = issue.toLowerCase();
+
+      // Find the specific chunk that mentions this contraindication
+      let matchingChunk = null;
+      for (const chunk of allChunks) {
+        const text = chunk.chunk_text.toLowerCase();
+        const sec = chunk.section.toLowerCase();
+        if (
+          (issueClean.includes("renal") || issueClean.includes("egfr") || issueClean.includes("kidney") || issueClean.includes("acidosis")) &&
+          (text.includes("egfr") || text.includes("renal") || text.includes("acidosis"))
+        ) {
+          if (sec.includes("contraindication") || sec.includes("safety")) {
+            matchingChunk = chunk;
+            break;
+          }
+          if (!matchingChunk) matchingChunk = chunk;
+        }
       }
-      const itemPage = typeof item.page === "number" ? item.page : parseInt(item.page, 10);
-      const isPageValid = itemPage && allChunks.some(ch => ch.page === itemPage);
+
+      if (!matchingChunk && typeof item === "object" && item.page) {
+        matchingChunk = allChunks.find(ch => ch.page === item.page);
+      }
+
+      const verifiedPage = matchingChunk ? matchingChunk.page : (typeof item.page === "number" ? item.page : null);
+      const verifiedSection = matchingChunk ? matchingChunk.section : (item.section || "");
+
       return {
-        issue: item.issue || item.description || "Identified safety hazard",
+        issue,
         severity: (item.severity || "CRITICAL").toUpperCase(),
-        page: isPageValid ? itemPage : null,
-        section: item.section || ""
+        page: verifiedPage,
+        section: verifiedSection,
+        evidence: matchingChunk ? matchingChunk.chunk_text : ""
       };
     });
 
@@ -156,7 +175,8 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
       overallScore: deterministic.eligibilityScore,
       overallStatus: deterministic.overallStatus,
       eligible: deterministic.eligible,
-      summary: rawResult.summary || "Clinical trial eligibility evaluation complete.",
+      explanation: deterministic.explanation,
+      summary: rawResult.summary || deterministic.explanation,
       criteria: validatedCriteria,
       contraindications: normalizedContraindications,
       deterministicBreakdown: deterministic.breakdown,
@@ -171,7 +191,6 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
     // 7. Supabase Persistence (analyses & protocol chunks)
     const db = getServerSupabase();
     if (db) {
-      // Persist analysis result
       try {
         await db.from("analyses").insert({
           patient_label: patientLabel,
@@ -186,7 +205,6 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
         console.warn("[Supabase Analyses Persistence]", dbErr?.message || dbErr);
       }
 
-      // Persist protocol chunks with embeddings if table exists
       try {
         const chunksToInsert = retrievedChunks.map(c => ({
           trial_name: file.name || "Clinical Trial Protocol",
@@ -198,7 +216,6 @@ Provide a structured clinical eligibility assessment matching this exact JSON sc
 
         await db.from("protocol_chunks").insert(chunksToInsert);
       } catch (chunkErr) {
-        // Non-blocking: table might be created without vector or pending migration
         console.warn("[Supabase Chunks Persistence]", chunkErr?.message || chunkErr);
       }
     }

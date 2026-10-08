@@ -50,6 +50,33 @@ function Results({ result }) {
         </div>
         <p>{result.summary}</p>
 
+        {result.explanation && result.explanation !== result.summary && (
+          <div style={{ marginTop: "12px", padding: "10px", background: result.eligible ? "#e6f4ea" : "#fce8e6", border: "2px solid #000", fontSize: "12px", lineHeight: "1.4" }}>
+            <strong>Determination:</strong> {result.explanation}
+          </div>
+        )}
+
+        {result.deterministicBreakdown && (
+          <div style={{ marginTop: "12px", fontSize: "11px", color: "#444", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            <span style={{ border: "1px solid #777", padding: "2px 6px", background: "#fff", fontWeight: "600" }}>
+              Inclusions Passed: {result.deterministicBreakdown.inclusionsPassed}
+            </span>
+            <span style={{ border: "1px solid #777", padding: "2px 6px", background: "#fff", fontWeight: "600" }}>
+              Exclusions Avoided: {result.deterministicBreakdown.exclusionsPassed}
+            </span>
+            {result.deterministicBreakdown.exclusionsFailed > 0 && (
+              <span style={{ border: "2px solid #c00", color: "#c00", padding: "2px 6px", background: "#fff", fontWeight: "700" }}>
+                Exclusions Triggered: {result.deterministicBreakdown.exclusionsFailed}
+              </span>
+            )}
+            {result.deterministicBreakdown.unknownCriteria > 0 && (
+              <span style={{ border: "1px solid #777", padding: "2px 6px", background: "#fff" }}>
+                Pending Review: {result.deterministicBreakdown.unknownCriteria}
+              </span>
+            )}
+          </div>
+        )}
+
         {stats && (
           <div style={{ marginTop: "16px", padding: "8px 12px", background: "#f0f4f8", border: "2px solid #000", fontSize: "12px", fontWeight: "600" }}>
             🔍 Grounded via {stats.retrievedChunksCount} pgvector chunks &bull; {stats.modelUsed}

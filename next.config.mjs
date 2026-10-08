@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig = {
-  serverExternalPackages: ["pdf-parse", "pdf-lib"],
+  serverExternalPackages: ["pdf-parse", "pdf-lib", "unpdf"],
   outputFileTracingRoot: path.join(__dirname),
 };
 
