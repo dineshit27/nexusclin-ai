@@ -44,29 +44,68 @@ async function parsePdfByPages(buffer) {
   }
 }
 
-async function callGeminiApi(promptText) {
+function extractTextFromInteractionResponse(data) {
+  if (typeof data.output === "string") return data.output;
+  if (Array.isArray(data.outputs)) {
+    for (const out of data.outputs) {
+      if (typeof out.text === "string") return out.text;
+      if (typeof out === "string") return out;
+      if (out.content) {
+        if (typeof out.content === "string") return out.content;
+        if (Array.isArray(out.content.parts)) {
+          return out.content.parts.map(p => p.text || "").join("\n");
+        }
+      }
+    }
+  }
+  if (Array.isArray(data.candidates)) {
+    const parts = data.candidates[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      return parts.map(p => p.text || "").join("\n");
+    }
+  }
+  if (typeof data.text === "string") return data.text;
+  if (data.result && typeof data.result === "string") return data.result;
+  return JSON.stringify(data);
+}
+
+function parseJsonFromText(rawText) {
+  if (!rawText) throw new Error("Gemini returned empty text output.");
+  try {
+    return JSON.parse(rawText);
+  } catch (e) {
+    const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
+    try {
+      return JSON.parse(cleaned);
+    } catch (e2) {
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
+      if (start !== -1 && end !== -1 && end > start) {
+        const jsonSubstring = cleaned.slice(start, end + 1);
+        return JSON.parse(jsonSubstring);
+      }
+      throw new Error("Failed to parse structured JSON from Gemini response.");
+    }
+  }
+}
+
+async function callGeminiInteractionsApi(promptText) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured on the server.");
   }
 
-  const primaryUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-  const fallbackUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+  const url = "https://generativelanguage.googleapis.com/v1beta/interactions";
 
   const payload = {
-    contents: [
-      {
-        role: "user",
-        parts: [{ text: promptText }]
-      }
-    ],
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: "application/json"
+    model: "gemini-3.8-flash",
+    input: promptText,
+    generation_config: {
+      thinking_level: "medium"
     }
   };
 
-  let res = await fetch(primaryUrl, {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -74,17 +113,6 @@ async function callGeminiApi(promptText) {
     },
     body: JSON.stringify(payload)
   });
-
-  if (!res.ok && res.status === 404) {
-    res = await fetch(fallbackUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey
-      },
-      body: JSON.stringify(payload)
-    });
-  }
 
   if (!res.ok) {
     const errorText = await res.text();
@@ -94,22 +122,13 @@ async function callGeminiApi(promptText) {
       if (errJson.error?.message) {
         errMessage = errJson.error.message;
       }
-    } catch { }
+    } catch {}
     throw new Error(errMessage);
   }
 
   const data = await res.json();
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!rawText) {
-    throw new Error("Gemini returned an empty analysis response.");
-  }
-
-  try {
-    return JSON.parse(rawText);
-  } catch (err) {
-    const cleaned = rawText.replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
-    return JSON.parse(cleaned);
-  }
+  const rawText = extractTextFromInteractionResponse(data);
+  return parseJsonFromText(rawText);
 }
 
 export async function POST(req) {
@@ -203,7 +222,7 @@ Return ONLY a structured JSON object matching this exact schema:
   ]
 }`;
 
-    const rawResult = await callGeminiApi(prompt);
+    const rawResult = await callGeminiInteractionsApi(prompt);
 
     const eligibilityScore = Math.max(
       0,
